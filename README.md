@@ -61,6 +61,15 @@ future model metrics.
 Databricks (Free Edition) · PySpark · Delta Lake · Unity Catalog · pandas ·
 matplotlib
 
+## Dataset citation
+
+Kitsune Network Attack [Dataset]. (2019). UCI Machine Learning Repository.
+https://doi.org/10.24432/C5D90Q
+
+Y. Mirsky, T. Doitshman, Y. Elovici, and A. Shabtai, "Kitsune: An Ensemble
+of Autoencoders for Online Network Intrusion Detection," Network and
+Distributed System Security Symposium (NDSS), 2018.
+
 ## Author
 
 **Santiago López Blanco** — Data Science Engineering student, Universidad
