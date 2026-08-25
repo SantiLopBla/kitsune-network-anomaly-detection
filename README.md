@@ -1,100 +1,71 @@
 # Kitsune Network Anomaly Detection
 
-End-to-end data engineering and machine learning pipeline for detecting network
-intrusions, built on Databricks using the Medallion Architecture (Bronze →
-Silver → Gold).
+## What is this project?
 
-## Project overview
+Imagine a security camera connected to the internet. Most of the time, it just
+sends normal data back and forth. But sometimes, an attacker tries to shut it
+down by flooding it with fake connection requests — this is called a **SYN DoS
+attack**.
 
-This project processes the **SYN DoS** subset of the [Kitsune Network Attack
-Dataset](https://archive.ics.uci.edu/dataset/516/kitsune+network+attack+dataset)
-(UCI Machine Learning Repository), a real network capture where an attacker
-performs a SYN flood denial-of-service attack against an IoT camera. The goal
-is to build a reliable data pipeline and, eventually, a classification model
-capable of distinguishing normal network traffic from attack traffic.
+This project analyzes almost **2.8 million network packets** (each one a tiny
+piece of data sent over the network) and tries to figure out: *can we tell,
+just by looking at the data, which packets are normal and which ones are part
+of an attack?*
 
-The project was built to reinforce hands-on skills in Databricks, Spark, and
-Delta Lake ahead of the **Microsoft Azure Databricks Data Engineer Associate
-(DP-750)** certification, and to demonstrate a data engineering + ML workflow
-relevant to fraud/risk detection roles (a domain that shares the same core
-challenge: detecting rare anomalous events in a sea of normal activity).
+It's built as a full data pipeline — from messy raw data to a clean, analyzed
+dataset — using Databricks, Spark, and Delta Lake. It also connects to a
+real-world problem: detecting fraud or risk is the same kind of challenge —
+finding rare, suspicious events hidden inside a huge amount of normal activity.
 
-## Dataset
+## The dataset
 
-- **Source:** Kitsune Network Attack Dataset (UCI ML Repository), SYN DoS subset
-- **Size:** 2,771,276 rows (network packets), 115 numeric features per packet
-- **Features:** 23 base traffic statistics computed over 5 time windows
-  (~100ms, ~500ms, ~1.5s, ~10s, ~1min), giving 115 total columns. Column names
-  are not semantically labeled in the public dataset.
-- **Label:** binary — `0` (normal traffic) / `1` (SYN DoS attack traffic)
-- **Class balance:** severely imbalanced — 99.75% normal, 0.25% attack
-  (2,764,238 vs. 7,038 rows)
+- **Source:** [Kitsune Network Attack Dataset](https://archive.ics.uci.edu/dataset/516/kitsune+network+attack+dataset) (UCI ML Repository), SYN DoS subset
+- **2,771,276 packets**, each described by 115 numeric measurements
+- **Label:** `0` = normal traffic, `1` = attack traffic
+- **Very imbalanced:** 99.75% normal vs. 0.25% attack — attacks are rare
 
-## Pipeline architecture
+The 115 measurements don't have descriptive names (just `feature_1` to
+`feature_115`), so this project relies on statistics — not guesswork — to
+figure out which ones actually matter.
 
-Built on Databricks Free Edition using Unity Catalog, Delta Lake, and PySpark,
-following the Medallion Architecture:
+## How the project is organized
 
-| Layer | Notebook | Purpose |
+Following the **Medallion Architecture**, a common way of organizing data
+pipelines in three quality stages:
+
+| Stage | Notebook | What happens |
 |---|---|---|
-| Bronze | `01_bronze_ingestion.ipynb` | Raw ingestion, schema validation, row alignment audit |
-| Silver | `02_silver_transformation.ipynb` | Type casting, null validation, data quality checks |
-| EDA | `03_EDA.ipynb` | Feature ranking, distribution analysis |
-| Gold | `04_gold_layer.ipynb` *(in progress)* | Class imbalance handling, model-ready dataset |
+| Bronze | `01_bronze_ingestion.ipynb` | Load the raw data, check it's complete and correctly matched |
+| Silver | `02_silver_transformation.ipynb` | Fix data types, check for errors and missing values |
+| EDA | `03_EDA.ipynb` | Explore the data, find which measurements matter most |
+| Gold | `04_gold_layer.ipynb` *(in progress)* | Prepare the final dataset for building a model |
 
-### Bronze layer
-- Ingested two raw source files (features + labels) into Unity Catalog Volumes.
-- Diagnosed and resolved a row-count mismatch caused by an unexpected header
-  row in the labels file.
-- Joined features and labels using `monotonically_increasing_id()`, then
-  **audited the join for silent misalignment risk** by verifying both source
-  DataFrames were read into a single Spark partition.
+### Bronze — getting the raw data right
+Loaded the raw files and caught a subtle bug early: the two source files
+(measurements and labels) didn't line up by one row. Traced it to a hidden
+header row, fixed it, and then double-checked that every measurement was
+correctly matched to its label — not just assumed.
 
-### Silver layer
-- Cast all 115 feature columns from `string` to `double`, and `label` from
-  `string` to `int`, applying an explicit scope rule: type correction belongs
-  in Silver, model-specific encoding (e.g. one-hot) belongs in Gold.
-- Validated null counts before/after casting (0 nulls introduced), verified
-  `label` domain (`{0, 1}` only), and confirmed no duplicate row IDs.
+### Silver — cleaning the data
+Converted every column to the right data type and validated the result: zero
+missing values, no duplicate rows, and the label only contains valid values.
 
-### Exploratory Data Analysis
-- Since none of the 115 features have public semantic names, feature
-  importance was assessed statistically rather than by domain intuition:
-  ranked all 115 features by a normalized mean-difference score between the
-  normal and attack classes (`[mean(attack) − mean(normal)] / stddev(normal)`).
-- Identified a small cluster of highly discriminative features
-  (`feature_67`, `feature_70`, `feature_73`, `feature_74`, `feature_76`,
-  `feature_77`, `feature_79`, `feature_80`) with scores far above the rest —
-  clustered together in the 115-feature vector, suggesting one specific time
-  window carries most of the signal for this attack type.
-- Visualized distributions (log scale, due to extreme value ranges) and found
-  that normal and attack traffic overlap heavily near zero for most features,
-  with attack-only outliers forming a separate tail — meaning a simple
-  threshold rule would not reliably separate the two classes.
+### EDA — finding what matters
+Since the 115 measurements have no descriptive names, ranked them purely by
+how differently they behave during an attack versus normal traffic. Found 8
+measurements that stand out clearly above the rest — and discovered that
+several of them are highly correlated with each other, meaning they carry
+overlapping information rather than being 8 independent signals.
 
-### Gold layer (in progress)
-Next steps: address the severe class imbalance (resampling or class weighting),
-finalize `label` encoding based on the chosen model, and prepare a model-ready
-dataset for training and evaluation.
+### Gold — building the model-ready dataset (in progress)
+Next: decide how to handle the severe class imbalance, choose which of the
+8 key features to keep given their overlap, and prepare the final dataset for
+model training.
 
-## Tech stack
+## Tools used
 
-- **Platform:** Databricks (Free Edition), Unity Catalog
-- **Processing:** PySpark, Apache Spark
-- **Storage:** Delta Lake
-- **Analysis:** pandas, matplotlib
-- **Version control:** Git integration via Databricks
-
-## Repository structure
-
-```
-├── Notebooks/
-│   ├── 01_bronze_ingestion.ipynb
-│   ├── 02_silver_transformation.ipynb
-│   ├── 03_EDA.ipynb
-│   └── 04_gold_layer.ipynb        (in progress)
-└── README.md
-```
+Databricks (Free Edition) · PySpark · Delta Lake · Unity Catalog · pandas ·
+matplotlib
 
 ## Author
 
