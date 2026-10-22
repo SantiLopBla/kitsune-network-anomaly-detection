@@ -1,5 +1,7 @@
 # Kitsune Network Anomaly Detection
 
+> **🚧 Status: rebuilding.** The pipeline is being rebuilt with Unity Catalog, data quality checks and production practices. Done so far: setup, landing and bronze layer (notebooks 00–02). 
+
 ## What is this project?
 
 Imagine a security camera connected to the internet. Most of the time it
@@ -9,10 +11,10 @@ attack**.
 
 This project analyzes almost **2.8 million network packets** and asks: can
 we tell, just from the data, which ones are normal and which are part of an
-attack? It's built as a full pipeline — raw data to model-ready dataset —
-using Databricks, Spark, and Delta Lake. The core challenge (finding rare
-suspicious events hidden in a huge amount of normal activity) is the same
-one behind fraud and risk detection.
+attack? It's being built as a full pipeline — raw data to model-ready
+dataset — using Databricks, Spark, and Delta Lake. The core challenge
+(finding rare suspicious events hidden in a huge amount of normal activity)
+is the same one behind fraud and risk detection.
 
 ## The dataset
 
@@ -20,46 +22,77 @@ one behind fraud and risk detection.
 - **2,771,276 packets**, 115 numeric measurements each
 - **Label:** `0` = normal, `1` = attack
 - **Severely imbalanced:** 99.75% normal vs. 0.25% attack
-- The 115 measurements have no descriptive names — feature relevance is
-  decided with statistics, not guesswork
+- The 115 measurements have no descriptive names in the source file
 
-## Pipeline (Medallion Architecture)
+## Architecture
 
-| Stage | Notebook | What happens |
+```
+UCI files (CSV.gz)
+      │
+      ▼
+kitsune_dev.raw.landing            ← volume: source files, unchanged
+      │
+      ▼
+kitsune_dev.bronze                 ← Delta tables: raw data + ingestion metadata
+  ├── syn_dos_features_raw
+  └── syn_dos_labels_raw
+      │
+      ▼
+kitsune_dev.silver / gold          ← next
+```
+
+All data lives in a dedicated Unity Catalog catalog (`kitsune_dev`), with
+one schema per layer, kept separate from a future production catalog.
+
+## Pipeline
+
+| Step | Notebook | What happens |
 |---|---|---|
-| Bronze | `01_bronze_ingestion.ipynb` | Load raw data, validate it's complete and correctly matched |
-| Silver | `02_silver_transformation.ipynb` | Fix data types, validate for errors and missing values |
-| EDA | `03_EDA.ipynb` | Explore the data, rank which measurements matter most |
-| Gold | `04_gold_feature_engineering.ipynb` | Build the model-ready train/cv/test datasets |
+| Setup | `00_setup_catalog` | Creates the catalog, schemas (`raw`, `bronze`, `silver`, `gold`), the landing volume and layer tags |
+| Landing | `01_land_source_files` | Copies the source files into the landing volume, skipping files already there |
+| Bronze | `02_bronze_ingestion` | Loads features and labels as managed Delta tables, unchanged, plus `_source_file` and `_ingested_at` |
 
-**Bronze:** loaded the raw files and caught a subtle bug early — the
-measurements and labels files didn't line up by one row, traced to a hidden
-header. Fixed it, then verified every row was correctly matched, not just
-assumed.
+### Design decisions
 
-**Silver:** converted every column to the right type and validated: zero
-missing values, no duplicate rows, label domain confirmed.
+- **Bronze keeps the data exactly as received.** All columns stay as
+  strings; typing and cleaning happen in silver. If something goes wrong
+  later, the original data is always available.
+- **The pipeline fails loudly instead of printing warnings.** Each notebook
+  raises an error if a check fails, so later steps never run on bad data:
+  - Landing: every expected file is present with its exact size in bytes
+  - Bronze: the features file has 115 columns, features and labels have the
+    same number of rows, and row numbers go from 1 to n with no gaps
+- **Every notebook is idempotent.** Re-running it produces the same result,
+  so it's safe to retry after a failure.
+- **Tables are documented in Unity Catalog** with table and column comments
+  and tags (`layer`, `source`, `dataset`, `contains_pii`), so anyone can
+  understand them from the Catalog Explorer.
 
-**EDA:** ranked the 115 unnamed features by how differently they behave
-between normal and attack traffic. Found 8 that stand out — but also found
-they cluster into 3 correlated groups, carrying overlapping signal rather
-than being 8 independent ones.
+## How to run
 
-**Gold:** located the attack window in time and found it's front-loaded,
-then built a chronological train/cv/test split (splitting randomly would
-leak future data into training). Recomputing the EDA feature score on train
-only revealed it had leakage — the score collapsed and no longer separated
-the classes cleanly. Feature selection by score was dropped; all 115
-features are kept, with selection deferred to the baseline model's own
-feature importances. Also found the three splits end up with very different
-class balances (train 0.13%, cv 15.0%, test 1.8%), a side effect of where
-attack density concentrates in time — documented as a caveat for reading
-future model metrics.
+Requires a Databricks workspace with Unity Catalog (works on Free Edition).
+
+1. Clone this repo into a Databricks Git folder.
+2. Run `00_setup_catalog` once to create the catalog structure.
+3. Download `SYN DoS_dataset.csv.gz` and `SYN DoS_labels.csv.gz` from the
+   [UCI ML Repository](https://archive.ics.uci.edu/dataset/516/kitsune+network+attack+dataset)
+   and upload them to `/Volumes/kitsune_dev/raw/landing/`.
+4. Run `02_bronze_ingestion` (~4 min).
+
+`01_land_source_files` copies the files from a previous volume in the
+author's workspace; skip it if you uploaded the files manually in step 3.
+
+## Findings from the previous version
+
+**Bronze:** caught a subtle bug early — the features and labels files didn't
+line up by one row, traced to a hidden header in the labels file. Fixed it,
+then verified every row was correctly matched, not just assumed. The rebuilt
+bronze layer keeps the labels file's own row number (`_c0`) so the join in
+silver can be checked explicitly.
 
 ## Tools used
 
-Databricks (Free Edition) · PySpark · Delta Lake · Unity Catalog · pandas ·
-matplotlib
+Databricks (Free Edition) · PySpark · Spark SQL · Delta Lake · Unity Catalog · Git / GitHub
 
 ## Dataset citation
 
