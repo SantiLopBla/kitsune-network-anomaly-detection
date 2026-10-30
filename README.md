@@ -86,7 +86,8 @@ functions be reused, and makes them testable with `pytest` later.
   raises an error if a check fails, so later steps never run on bad data:
   - Landing: every expected file is present with its exact size in bytes
   - Bronze: the features file has 115 columns, features and labels have the
-    same number of rows, and row numbers go from 1 to n with no gaps
+    same number of rows, and row numbers in both tables go from 1 to n with
+    no gaps or repeats
   - Silver (before writing): the join doesn't lose or add rows, no column
     has nulls, no feature has NaN or infinite values, and every label is 0 or 1
   - Silver (after writing): the saved table has the expected number of rows
@@ -102,9 +103,10 @@ functions be reused, and makes them testable with `pytest` later.
   order, and later steps select ranges of packets (for example, the first
   part of the capture for training), so clustering by row number speeds up
   those filters.
-- **Tables are documented in Unity Catalog** with table and column comments
-  and tags (`layer`, `source`, `dataset`, `contains_pii`), so anyone can
-  understand them from the Catalog Explorer.
+- **Tables are documented in Unity Catalog** with table comments and tags
+  (`layer`, `source`, `dataset`, `contains_pii`), so anyone can understand
+  them from the Catalog Explorer. Bronze also has column comments; silver
+  column comments are planned.
 
 ## Finding the real column names
 
@@ -159,8 +161,9 @@ author's workspace; skip it if you uploaded the files manually in step 3.
 **Bronze:** caught a subtle bug early — the features and labels files didn't
 line up by one row, traced to a hidden header in the labels file. Fixed it,
 then verified every row was correctly matched, not just assumed. The rebuilt
-bronze layer keeps the labels file's own row number (`_c0`) so the join in
-silver can be checked explicitly.
+bronze layer keeps the labels file's own row number (`_c0`) and validates it
+(exactly 1 to n, no gaps or repeats), so the join in silver can't silently
+misalign packets and labels.
 
 ## Tools used
 
