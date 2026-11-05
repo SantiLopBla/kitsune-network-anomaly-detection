@@ -1,6 +1,6 @@
 # Kitsune Network Anomaly Detection
 
-> **🚧 Status: rebuilding.** The pipeline is being rebuilt with Unity Catalog, data quality checks and production practices. Done so far: setup, landing, bronze and silver layers (notebooks 00–03). Next: EDA and the gold layer (model-ready train/validation/test sets).
+> **🚧 Status: rebuilding.** The pipeline is being rebuilt with Unity Catalog, data quality checks and production practices. Done so far: setup, landing, bronze and silver layers (notebooks 00–03) and the exploratory analysis (EDA). Next: the gold layer (model-ready train/validation/test sets), designed from the EDA findings.
 
 ## What is this project?
 
@@ -40,10 +40,10 @@ kitsune_dev.bronze                 ← Delta tables: raw data (all text) + inges
       │
       ▼
 kitsune_dev.silver                 ← Delta table: typed, named, validated, one row per packet
-  └── syn_dos_packets
+  └── syn_dos_packets  ──────────►  EDA (Exploration/eda_syn_dos): findings → gold design
       │
       ▼
-kitsune_dev.gold                   ← next
+kitsune_dev.gold                   ← next: model-ready dataset
 ```
 
 All data lives in a dedicated Unity Catalog catalog (`kitsune_dev`), with
@@ -59,6 +59,7 @@ Notebooks/
   03_silver_transformation    bronze → silver (orchestration only)
   Exploration/
     feature_layout_check      evidence for the column names used in silver
+    eda_syn_dos               exploratory analysis of the silver table
 src/kitsune/
   feature_names.py            generates the 115 feature names
   silver.py                   silver transformations and quality checks
@@ -67,6 +68,9 @@ src/kitsune/
 The notebooks **orchestrate**; the transformation logic lives in Python
 modules under `src/kitsune/`. This keeps the notebooks short, lets the same
 functions be reused, and makes them testable with `pytest` later.
+
+Notebooks under `Exploration/` are **not pipeline steps**: they answer
+questions about the data, and their outputs are committed as evidence.
 
 ## Pipeline
 
@@ -100,9 +104,9 @@ functions be reused, and makes them testable with `pytest` later.
 - **Every notebook is idempotent.** Re-running it produces the same result
   (silver uses `overwrite`), so it's safe to retry after a failure.
 - **Liquid clustering on `_row_number` in silver.** The data is in time
-  order, and later steps select ranges of packets (for example, the first
-  part of the capture for training), so clustering by row number speeds up
-  those filters.
+  order (verified in the EDA), and later steps select ranges of packets (for
+  example, the first part of the capture for training), so clustering by row
+  number speeds up those filters.
 - **Tables are documented in Unity Catalog** with table comments and tags
   (`layer`, `source`, `dataset`, `contains_pii`), so anyone can understand
   them from the Catalog Explorer. Bronze also has column comments; silver
@@ -128,6 +132,79 @@ Each feature is named `{group}_l{window}_{statistic}`, for example
 `hh_l5_pcc` = correlation between the two directions of a conversation
 between two IPs, over the shortest time window (λ = 5).
 
+The five groups summarize recent traffic from different points of view:
+
+| Group | Groups packets by | Columns |
+|---|---|---|
+| MI | same sender (MAC + IP) | 15 |
+| H | same source IP | 15 |
+| HH | same pair of IPs (A ↔ B) | 35 |
+| HH_jit | same pair of IPs, time between packets (jitter) | 15 |
+| HpHp | same pair of IP + port | 35 |
+
+## What the EDA found
+
+Before building gold, I explored the silver table
+(`Notebooks/Exploration/eda_syn_dos`) with one question in mind: **what in
+this data could mislead a model?** Every finding below is backed by an output
+in the notebook.
+
+### 1. Where the attack is
+
+- The first **2,682,349 packets (96.8%) are 100% normal**. The attack starts
+  at row 2,682,350 and lasts until the end of the file (7,038 attack packets).
+- The attack never takes over the traffic: at most about 37% of the packets
+  in any 1,000-packet window are attacks. There is a **sustained flood**
+  (about 20% attack share), followed by **short bursts**.
+- **Why it matters:** the model will learn what "normal" looks like from the
+  clean prefix only (like the original Kitsune). Normal packets inside the
+  attack zone are left out of training, because their features summarize
+  recent traffic that includes the attack. The model should also be
+  evaluated per phase, since the short bursts are harder to detect.
+
+### 2. A bug in the dataset that would let a model cheat
+
+- The HH_jit columns should hold **seconds between packets**, but 537 rows
+  contain values of about **1.49 billion seconds (47 years)**. Converted to a
+  date, they give **2017-02-25**, the day the dataset was recorded: the
+  feature extractor leaked the **Unix timestamp** instead of the time gap,
+  on the first packet of each new conversation.
+- The leak spreads to the following packets through the running averages:
+  from 1,577 rows (fastest-forgetting window) to 10,427 rows
+  (slowest-forgetting window).
+- **490 of the 492 leaked rows in the attack zone are attack packets
+  (99.6%).** A SYN flood opens many new conversations, so the bug lands
+  almost only on attacks. A model would learn to spot the bug instead of the
+  attack: inflated metrics that wouldn't hold on a real network.
+- I checked every HH_jit statistic: `mean` and `variance` carry the leak,
+  `weight` (a packet count) is clean.
+- **Bonus:** the leaked timestamps work as a hidden clock. They never go
+  backwards (checked with a window function), which proves the file is
+  stored in **arrival order** and supports a chronological train/test split.
+  The capture lasts about 53 minutes.
+
+### 3. The other feature groups carry real signals
+
+I compared the average of every column in normal vs attack packets, group by
+group, looking for anything as suspicious as the HH_jit leak:
+
+| Group | Result | Action for gold |
+|---|---|---|
+| MI | Real signal: attack packets come from senders with larger, more uniform packet sizes | Keep |
+| H | Almost identical to MI (each device uses one IP) | Keep, note redundancy |
+| HH | Real signal, physically possible values | Keep |
+| HH_jit | **Leaked timestamps** in `mean` and `variance` | **Drop 10 columns**, keep 5 `weight` |
+| HpHp | Real signal: attacks hit a single port pair, normal traffic uses many | Keep |
+
+### Decisions for the gold layer
+
+- **Train only on the normal prefix** (rows 1 to 2,682,349).
+- **Drop the 10 HH_jit `mean` and `variance` columns**, keep the 5 `weight`
+  columns.
+- **Keep silver unchanged** (all 115 columns), so a model trained with and
+  without the HH_jit columns can be compared to show how much the bug
+  inflates the results.
+
 ## How to run
 
 Requires a Databricks workspace with Unity Catalog (works on Free Edition).
@@ -137,8 +214,9 @@ Requires a Databricks workspace with Unity Catalog (works on Free Edition).
 3. Download `SYN DoS_dataset.csv.gz` and `SYN DoS_labels.csv.gz` from the
    [UCI ML Repository](https://archive.ics.uci.edu/dataset/516/kitsune+network+attack+dataset)
    and upload them to `/Volumes/kitsune_dev/raw/landing/`.
-4. Run `02_bronze_ingestion` (~4 min).
+4. Run `02_bronze_ingestion` (about 4 min).
 5. Run `03_silver_transformation`.
+6. *(Optional)* Run `Exploration/eda_syn_dos` to reproduce the EDA findings.
 
 `01_land_source_files` copies the files from a previous volume in the
 author's workspace; skip it if you uploaded the files manually in step 3.
@@ -155,6 +233,10 @@ author's workspace; skip it if you uploaded the files manually in step 3.
   be merged into a single aggregation to make the check faster.
 - **No automated tests yet.** The functions in `src/kitsune/` are written to
   be tested; `pytest` tests are planned.
+- **The EDA feature comparison uses averages.** Averages can hide a few
+  extreme values; the maximum was only checked for the HH_jit group.
+- **No IP or MAC addresses in the dataset.** Some patterns (for example, why
+  attack senders have larger packets) can be described but not fully explained.
 
 ## Findings from the previous version
 
@@ -167,7 +249,7 @@ misalign packets and labels.
 
 ## Tools used
 
-Databricks (Free Edition) · PySpark · Spark SQL · Delta Lake · Unity Catalog · Git / GitHub
+Databricks (Free Edition) · PySpark · Spark SQL · Delta Lake · Unity Catalog · matplotlib · Git / GitHub
 
 ## Dataset citation
 
