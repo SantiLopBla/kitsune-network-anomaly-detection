@@ -61,7 +61,7 @@ Notebooks/
     feature_layout_check      evidence for the column names used in silver
     eda_syn_dos               exploratory analysis of the silver table
 src/kitsune/
-  feature_names.py            generates the 115 feature names
+  feature_names.py            generates the 115 feature names and descriptions
   silver.py                   silver transformations and quality checks
 ```
 
@@ -79,7 +79,7 @@ questions about the data, and their outputs are committed as evidence.
 | Setup | `00_setup_catalog` | Creates the catalog, schemas (`raw`, `bronze`, `silver`, `gold`), the landing volume and layer tags |
 | Landing | `01_land_source_files` | Copies the source files into the landing volume, skipping files already there |
 | Bronze | `02_bronze_ingestion` | Loads features and labels as managed Delta tables, unchanged, plus `_source_file` and `_ingested_at` |
-| Silver | `03_silver_transformation` | Casts the 115 features to numbers, gives them real names, joins them with the labels, validates and writes `syn_dos_packets` |
+| Silver | `03_silver_transformation` | Casts the 115 features to numbers, gives them real names, joins them with the labels, validates, writes `syn_dos_packets` and documents every column |
 
 ### Design decisions
 
@@ -94,7 +94,8 @@ questions about the data, and their outputs are committed as evidence.
     no gaps or repeats
   - Silver (before writing): the join doesn't lose or add rows, no column
     has nulls, no feature has NaN or infinite values, and every label is 0 or 1
-  - Silver (after writing): the saved table has the expected number of rows
+  - Silver (after writing): the saved table has the expected number of rows,
+    and every column has a comment in Unity Catalog
 - **Silver validates before it writes.** Bad data is stopped before it
   reaches the table, not discovered afterwards.
 - **Strict type casting in the pipeline.** Silver uses `cast`, which stops
@@ -109,8 +110,10 @@ questions about the data, and their outputs are committed as evidence.
   number speeds up those filters.
 - **Tables are documented in Unity Catalog** with table comments and tags
   (`layer`, `source`, `dataset`, `contains_pii`), so anyone can understand
-  them from the Catalog Explorer. Bronze also has column comments; silver
-  column comments are planned.
+  them from the Catalog Explorer. Every column in bronze and silver has a
+  comment; in silver, the 115 feature descriptions are generated from the
+  same layout as the names (`feature_comments()`), and a check fails the
+  notebook if any column is left without one.
 
 ## Finding the real column names
 
